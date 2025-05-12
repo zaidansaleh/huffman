@@ -238,14 +238,30 @@ void stack_free(Stack *stack) {
     free(stack);
 }
 
-int main(void) {
-    const char *s = "hello";
-    size_t len = strlen(s);
-    char freq[SYMBOL_SIZE] = {0};
+void freq_table_build(const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
+    *char_count = strlen(input);
+    *symbol_count = 0;
+    size_t freq[SYMBOL_SIZE] = {0};
+
+    for (size_t i = 0; i < *char_count; ++i) {
+        size_t *element = &freq[(size_t)input[i]];
+        if (*element == 0) {
+            *symbol_count += 1;
+        }
+        *element += 1;
+    }
+
+    *node_count = 2 * *symbol_count - 1;
+}
+
+Node *huffman_tree_build(const char *input) {
+    Node *root = NULL;
+    size_t len = strlen(input);
+    size_t freq[SYMBOL_SIZE] = {0};
     size_t symbol_count = 0;
 
     for (size_t i = 0; i < len; ++i) {
-        char *element = &freq[(size_t)s[i]];
+        size_t *element = &freq[(size_t)input[i]];
         if (*element == 0) {
             symbol_count++;
         }
@@ -260,14 +276,10 @@ int main(void) {
         }
         Node *node = node_new_leaf(ch, freq[ch]);
         if (!node) {
-            fprintf(stderr, "error: leaf node init failed\n");
-            heap_free(pq);
-            return 1;
+            goto cleanup;
         }
         if (heap_insert(pq, node) < 0) {
-            fprintf(stderr, "error: heap insert failed\n");
-            heap_free(pq);
-            return 1;
+            goto cleanup;
         }
     }
 
@@ -276,33 +288,30 @@ int main(void) {
         Node *b = heap_pop(pq);
         Node *node = node_new_internal(a, b);
         if (!node) {
-            fprintf(stderr, "error: internal node init failed\n");
             // a and b were removed from pq by heap_pop, so they must be freed manually.
             free(a);
             free(b);
-            heap_free(pq);
-            return 1;
+            goto cleanup;
         }
         if (heap_insert(pq, node) < 0) {
-            fprintf(stderr, "error: heap insert failed\n");
             free(a);
             free(b);
-            heap_free(pq);
-            return 1;
+            goto cleanup;
         }
     }
-    Node *root = heap_pop(pq);
-    node_pprint(root, 0, stdout);
+    root = heap_pop(pq);
 
-    printf("--------------------------------\n");
+cleanup:
+    heap_free(pq);
+    return root;
+}
 
-    Code table[SYMBOL_SIZE] = {0};
+int code_table_build(Code *table, Node *root, size_t node_count) {
+    int retcode = 0;
     Stack *st = stack_new(node_count);
     if (!st) {
-        fprintf(stderr, "error: stack init failed\n");
-        node_free(root);
-        heap_free(pq);
-        return 1;
+        retcode = -1;
+        goto cleanup;
     }
 
     StackElement root_element = {
@@ -310,20 +319,14 @@ int main(void) {
         .code = {.bits = 0, .length = 0},
     };
     if (stack_push(st, root_element) < 0) {
-        fprintf(stderr, "error: stack push failed\n");
-        stack_free(st);
-        node_free(root);
-        heap_free(pq);
-        return 1;
+        retcode = -1;
+        goto cleanup;
     }
     while (st->length > 0) {
         StackElement element = stack_pop(st);
         if (!element.node) {
-            fprintf(stderr, "error: stack pop failed\n");
-            stack_free(st);
-            node_free(root);
-            heap_free(pq);
-            return 1;
+            retcode = -1;
+            goto cleanup;
         }
 
         Node *node = element.node;
@@ -336,11 +339,8 @@ int main(void) {
             code_append(&code, 0);
             StackElement el = {.node = node->left, .code = code};
             if (stack_push(st, el) < 0) {
-                fprintf(stderr, "error: stack push failed\n");
-                stack_free(st);
-                node_free(root);
-                heap_free(pq);
-                return 1;
+                retcode = -1;
+                goto cleanup;
             }
         }
         if (node->right) {
@@ -348,58 +348,30 @@ int main(void) {
             code_append(&code, 1);
             StackElement el = {.node = node->right, .code = code};
             if (stack_push(st, el) < 0) {
-                fprintf(stderr, "error: stack push failed\n");
-                stack_free(st);
-                node_free(root);
-                heap_free(pq);
-                return 1;
+                retcode = -1;
+                goto cleanup;
             }
         }
     }
 
-    for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
-        Code *code = &table[ch];
-        if (code->length == 0) {
-            continue;
-        }
-        printf("%c -> ", ch);
-        code_print(code, stdout);
-        fputc('\n', stdout);
-    }
-
-    printf("--------------------------------\n");
-
-    for (size_t i = 0; i < len; ++i) {
-        char ch = s[i];
-        Code *code = &table[(size_t)ch];
-        code_print(code, stdout);
-    }
-    fputc('\n', stdout);
-
-    FILE *output = fopen("out", "w");
-    if (!output) {
-        fprintf(stderr, "error: output file open failed\n");
+cleanup:
+    if (st) {
         stack_free(st);
-        node_free(root);
-        heap_free(pq);
-        return 1;
     }
+    return retcode;
+}
 
+int compress(const char *input, size_t char_count, const Code *table, FILE *stream) {
     Code byte = {.bits = 0, .length = 0};
-    for (size_t i = 0; i < len; ++i) {
-        char ch = s[i];
-        Code *code = &table[(size_t)ch];
+    for (size_t i = 0; i < char_count; ++i) {
+        char ch = input[i];
+        const Code *code = &table[(size_t)ch];
         for (int i = code->length - 1; i >= 0; --i) {
             uint8_t bit = (code->bits >> i) & 1;
             code_append(&byte, bit);
             if (byte.length == UINT8_WIDTH) {
-                if (!fwrite(&byte.bits, 1, 1, output)) {
-                    fprintf(stderr, "error: output file write failed\n");
-                    fclose(output);
-                    stack_free(st);
-                    node_free(root);
-                    heap_free(pq);
-                    return 1;
+                if (!fwrite(&byte.bits, 1, 1, stream)) {
+                    return -1;
                 }
                 byte.bits = 0;
                 byte.length = 0;
@@ -409,20 +381,59 @@ int main(void) {
     if (byte.length != UINT8_WIDTH) {
         uint8_t remaining = UINT8_WIDTH - byte.length;
         byte.bits = byte.bits << remaining;
-        if (!fwrite(&byte.bits, 1, 1, output)) {
-            fprintf(stderr, "error: output file write failed\n");
-            fclose(output);
-            stack_free(st);
-            node_free(root);
-            heap_free(pq);
-            return 1;
+        if (!fwrite(&byte.bits, 1, 1, stream)) {
+            return -1;
         }
     }
 
-    fclose(output);
-    stack_free(st);
-    node_free(root);
-    heap_free(pq);
     return 0;
+}
+
+int main(void) {
+    int retcode = 0;
+    Node *root = NULL;
+    FILE *output = NULL;
+
+    const char *input = "hello";
+    size_t char_count;
+    size_t symbol_count;
+    size_t node_count;
+    freq_table_build(input, &char_count, &symbol_count, &node_count);
+
+    root = huffman_tree_build(input);
+    if (!root) {
+        fprintf(stderr, "error: huffman tree build failed\n");
+        retcode = 1;
+        goto cleanup;
+    }
+
+    Code table[SYMBOL_SIZE] = {0};
+    if (code_table_build(table, root, node_count) < 0) {
+        fprintf(stderr, "error: code table build failed\n");
+        retcode = 1;
+        goto cleanup;
+    }
+
+    output = fopen("out", "w");
+    if (!output) {
+        fprintf(stderr, "error: output file open failed\n");
+        retcode = 1;
+        goto cleanup;
+    }
+
+    if (compress(input, char_count, table, output) < 0) {
+        fprintf(stderr, "error: compress failed\n");
+        retcode = 1;
+        goto cleanup;
+    }
+
+cleanup:
+    if (output) {
+        fclose(output);
+    }
+    if (root) {
+        node_free(root);
+    }
+    return retcode;
 }
 
