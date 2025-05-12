@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -416,10 +417,39 @@ void input_free(char *input) {
 
 int main(int argc, const char *argv[]) {
     int retcode = 0;
+    bool show_help = false;
     FILE *input_file = NULL;
     FILE *output_file = NULL;
     char *input = NULL;
     Node *root = NULL;
+
+    const char *program_name = argv[0];
+
+    for (int i = 0; i < argc; ++i) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+            show_help = true;
+        }
+    }
+
+    if (show_help) {
+        printf(
+            "Usage: %s [input] [output]\n"
+            "Compress input file to output file using Huffman coding.\n"
+            "\n"
+            "Arguments:\n"
+            "  %-10s %s\n"
+            "  %-10s %s\n"
+            "\n"
+            "Options:\n"
+            "  %-14s %s\n",
+            program_name,
+            "input", "Input file (stdin if omitted)",
+            "output", "Output file (stdout if omitted)",
+            "-h, --help", "Display this help message"
+        );
+        goto cleanup;
+    }
 
     if (argc < 2) {
         input_file = stdin;
