@@ -164,6 +164,12 @@ void heap_pprint(const Heap *heap, FILE *stream) {
 }
 
 void heap_free(Heap *heap) {
+    for (size_t i = 0; i < heap->length; ++i) {
+        Node *node = heap->data[i];
+        // Avoid calling node_free to prevent recursive free since
+        // heap->data stores all the nodes.
+        free(node);
+    }
     free(heap);
 }
 
@@ -203,15 +209,30 @@ int main(void) {
         }
     }
 
-    heap_pprint(pq, stdout);
-
-    while (pq->length > 0) {
-        printf("--------------------------------\n");
-        Node *node = heap_pop(pq);
-        node_free(node);
-        heap_pprint(pq, stdout);
+    while (pq->length > 1) {
+        Node *a = heap_pop(pq);
+        Node *b = heap_pop(pq);
+        Node *node = node_new_internal(a, b);
+        if (!node) {
+            fprintf(stderr, "error: internal node init failed\n");
+            // a and b were removed from pq by heap_pop, so they must be freed manually.
+            free(a);
+            free(b);
+            heap_free(pq);
+            return 1;
+        }
+        if (heap_insert(pq, node) < 0) {
+            fprintf(stderr, "error: heap insert failed\n");
+            free(a);
+            free(b);
+            heap_free(pq);
+            return 1;
+        }
     }
+    Node *root = heap_pop(pq);
+    node_pprint(root, 0, stdout);
 
+    node_free(root);
     heap_free(pq);
     return 0;
 }
