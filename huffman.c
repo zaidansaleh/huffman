@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FREQ_SIZE 128
+#define SYMBOL_SIZE 128
 
 typedef struct Node {
     char symbol;
@@ -177,10 +177,75 @@ int compare(const Node *a, const Node *b) {
     return (int)a->count - (int)b->count;
 }
 
+typedef struct {
+    uint32_t bits;
+    uint8_t length;
+} Code;
+
+void code_append_zero(Code *code) {
+    code->bits = code->bits << 1;
+    code->length++;
+}
+
+void code_append_one(Code *code) {
+    code->bits = code->bits << 1 | 1;
+    code->length++;
+}
+
+void code_print(const Code *code, FILE *stream) {
+    for (int i = code->length - 1; i >= 0; --i) {
+        uint8_t bit = (code->bits >> i) & 1;
+        char ch = bit ? '1' : '0';
+        fputc(ch, stream);
+    }
+}
+
+typedef struct {
+    Node *node;
+    Code code;
+} StackElement;
+
+typedef struct {
+    size_t capacity;
+    size_t length;
+    StackElement data[];
+} Stack;
+
+Stack *stack_new(size_t capacity) {
+    Stack *stack = malloc(sizeof(Stack) + sizeof(StackElement) * capacity);
+    if (!stack) {
+        return NULL;
+    }
+    stack->capacity = capacity;
+    stack->length = 0;
+    memset(stack->data, 0, capacity);
+    return stack;
+}
+
+int stack_push(Stack *stack, StackElement element) {
+    if (stack->length >= stack->capacity) {
+        return -1;
+    }
+    stack->data[stack->length++] = element;
+    return 0;
+}
+
+StackElement stack_pop(Stack *stack) {
+    if (stack->length == 0) {
+        StackElement el = {0};
+        return el;
+    }
+    return stack->data[--stack->length];
+}
+
+void stack_free(Stack *stack) {
+    free(stack);
+}
+
 int main(void) {
     const char *s = "hello";
     size_t len = strlen(s);
-    char freq[FREQ_SIZE] = {0};
+    char freq[SYMBOL_SIZE] = {0};
     size_t symbol_count = 0;
 
     for (size_t i = 0; i < len; ++i) {
@@ -191,8 +256,9 @@ int main(void) {
         *element += 1;
     }
 
-    Heap *pq = heap_new(2 * symbol_count - 1, compare);
-    for (uint8_t ch = 0; ch < FREQ_SIZE; ++ch) {
+    size_t node_count = 2 * symbol_count - 1;
+    Heap *pq = heap_new(node_count, compare);
+    for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
         if (freq[ch] == 0) {
             continue;
         }
@@ -232,6 +298,78 @@ int main(void) {
     Node *root = heap_pop(pq);
     node_pprint(root, 0, stdout);
 
+    Code table[SYMBOL_SIZE] = {0};
+    Stack *st = stack_new(node_count);
+    if (!st) {
+        fprintf(stderr, "error: stack init failed\n");
+        node_free(root);
+        heap_free(pq);
+        return 1;
+    }
+
+    StackElement root_element = {
+        .node = root,
+        .code = {.bits = 0, .length = 0},
+    };
+    if (stack_push(st, root_element) < 0) {
+        fprintf(stderr, "error: stack push failed\n");
+        stack_free(st);
+        node_free(root);
+        heap_free(pq);
+        return 1;
+    }
+    while (st->length > 0) {
+        StackElement element = stack_pop(st);
+        if (!element.node) {
+            fprintf(stderr, "error: stack pop failed\n");
+            stack_free(st);
+            node_free(root);
+            heap_free(pq);
+            return 1;
+        }
+
+        Node *node = element.node;
+        if (!node->left && !node->right) {
+            table[(size_t)node->symbol] = element.code;
+        }
+
+        if (node->left) {
+            Code code = element.code;
+            code_append_zero(&code);
+            StackElement el = {.node = node->left, .code = code};
+            if (stack_push(st, el) < 0) {
+                fprintf(stderr, "error: stack push failed\n");
+                stack_free(st);
+                node_free(root);
+                heap_free(pq);
+                return 1;
+            }
+        }
+        if (node->right) {
+            Code code = element.code;
+            code_append_one(&code);
+            StackElement el = {.node = node->right, .code = code};
+            if (stack_push(st, el) < 0) {
+                fprintf(stderr, "error: stack push failed\n");
+                stack_free(st);
+                node_free(root);
+                heap_free(pq);
+                return 1;
+            }
+        }
+    }
+
+    for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
+        Code *code = &table[ch];
+        if (code->length == 0) {
+            continue;
+        }
+        printf("%c -> ", ch);
+        code_print(code, stdout);
+        fputc('\n', stdout);
+    }
+
+    stack_free(st);
     node_free(root);
     heap_free(pq);
     return 0;
