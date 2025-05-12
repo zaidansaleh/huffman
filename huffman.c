@@ -364,7 +364,7 @@ int compress(const char *input, size_t char_count, const Code *table, FILE *stre
             uint8_t bit = (code->bits >> i) & 1;
             code_append(&byte, bit);
             if (byte.length == UINT8_WIDTH) {
-                if (!fwrite(&byte.bits, 1, 1, stream)) {
+                if (fputc(byte.bits, stream) == EOF) {
                     return -1;
                 }
                 byte.bits = 0;
@@ -375,7 +375,7 @@ int compress(const char *input, size_t char_count, const Code *table, FILE *stre
     if (byte.length != UINT8_WIDTH) {
         uint8_t remaining = UINT8_WIDTH - byte.length;
         byte.bits = byte.bits << remaining;
-        if (!fwrite(&byte.bits, 1, 1, stream)) {
+        if (fputc(byte.bits, stream) == EOF) {
             return -1;
         }
     }
