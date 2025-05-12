@@ -13,6 +13,38 @@ typedef struct Node {
     struct Node *right;
 } Node;
 
+Node *node_new_leaf(char symbol, size_t count) {
+    Node *node = malloc(sizeof(Node));
+    if (!node) {
+        return NULL;
+    }
+    node->symbol = symbol;
+    node->count = count;
+    node->left = NULL;
+    node->right = NULL;
+    return node;
+}
+
+Node *node_new_internal(Node *left, Node *right) {
+    Node *node = malloc(sizeof(Node));
+    if (!node) {
+        return NULL;
+    }
+    node->symbol = '\0';
+    node->count = left->count + right->count;
+    node->left = left;
+    node->right = right;
+    return node;
+}
+
+void node_free(Node *node) {
+    if (node->left && node->right) {
+        node_free(node->left);
+        node_free(node->right);
+    }
+    free(node);
+}
+
 void node_print(const Node *node, FILE *stream) {
     fprintf(stream, "('%c': %ld)", node->symbol, node->count);
 }
@@ -34,10 +66,10 @@ typedef struct {
     int (*comparator)(const Node *, const Node *);
     size_t capacity;
     size_t length;
-    Node data[];
+    Node *data[];
 } Heap;
 
-Node *heap_left_child(Heap *heap, const Node *node) {
+Node **heap_left_child(Heap *heap, Node **node) {
     size_t i = node - heap->data;
     if (i >= heap->length) {
         return NULL;
@@ -49,7 +81,7 @@ Node *heap_left_child(Heap *heap, const Node *node) {
     return &heap->data[j];
 }
 
-Node *heap_right_child(Heap *heap, const Node *node) {
+Node **heap_right_child(Heap *heap, Node **node) {
     size_t i = node - heap->data;
     if (i >= heap->length) {
         return NULL;
@@ -61,7 +93,7 @@ Node *heap_right_child(Heap *heap, const Node *node) {
     return &heap->data[j];
 }
 
-Node *heap_parent(Heap *heap, const Node *node) {
+Node **heap_parent(Heap *heap, Node **node) {
     size_t i = node - heap->data;
     if (i == 0 || i >= heap->length) {
         return NULL;
@@ -81,15 +113,15 @@ Heap *heap_new(size_t capacity, int (*comparator)(const Node *, const Node *)) {
     return heap;
 }
 
-int heap_insert(Heap *heap, Node value) {
+int heap_insert(Heap *heap, Node *value) {
     if (heap->length >= heap->capacity) {
         return -1;
     }
-    Node *hole = &heap->data[heap->length++];
+    Node **hole = &heap->data[heap->length++];
     *hole = value;
-    Node *parent;
-    while ((parent = heap_parent(heap, hole)) && (*heap->comparator)(hole, parent) < 0) {
-        Node tmp = *hole;
+    Node **parent;
+    while ((parent = heap_parent(heap, hole)) && (*heap->comparator)(*hole, *parent) < 0) {
+        Node *tmp = *hole;
         *hole = *parent;
         *parent = tmp;
         hole = parent;
@@ -97,23 +129,23 @@ int heap_insert(Heap *heap, Node value) {
     return 0;
 }
 
-Node heap_pop(Heap *heap) {
-    Node *hole = &heap->data[0];
-    Node root = *hole;
+Node *heap_pop(Heap *heap) {
+    Node **hole = &heap->data[0];
+    Node *root = *hole;
     while (1) {
-        Node *child;
-        Node *left = heap_left_child(heap, hole);
-        Node *right = heap_right_child(heap, hole);
-        if (left && right && left->count && right->count) {
-            child = (*heap->comparator)(left, right) < 0 ? left : right;
-        } else if (left && left->count) {
+        Node **child;
+        Node **left = heap_left_child(heap, hole);
+        Node **right = heap_right_child(heap, hole);
+        if (left && right && (*left)->count && (*right)->count) {
+            child = (*heap->comparator)(*left, *right) < 0 ? left : right;
+        } else if (left && (*left)->count) {
             child = left;
-        } else if (right && right->count) {
+        } else if (right && (*right)->count) {
             child = right;
         } else {
             break;
         }
-        Node tmp = *hole;
+        Node *tmp = *hole;
         *hole = *child;
         *child = tmp;
         hole = child;
@@ -124,7 +156,7 @@ Node heap_pop(Heap *heap) {
 
 void heap_pprint(const Heap *heap, FILE *stream) {
     for (size_t i = 0; i < heap->length; ++i) {
-        node_print(&heap->data[i], stream);
+        node_print(heap->data[i], stream);
         fputc(' ', stream);
     }
     fprintf(stream, "<%ld empty>", heap->capacity - heap->length);
@@ -158,12 +190,12 @@ int main(void) {
         if (freq[ch] == 0) {
             continue;
         }
-        Node node = {
-            .symbol = ch,
-            .count = freq[ch],
-            .left = NULL,
-            .right = NULL,
-        };
+        Node *node = node_new_leaf(ch, freq[ch]);
+        if (!node) {
+            fprintf(stderr, "error: leaf node init failed\n");
+            heap_free(pq);
+            return 1;
+        }
         if (heap_insert(pq, node) < 0) {
             fprintf(stderr, "error: heap insert failed\n");
             heap_free(pq);
@@ -175,7 +207,8 @@ int main(void) {
 
     while (pq->length > 0) {
         printf("--------------------------------\n");
-        heap_pop(pq);
+        Node *node = heap_pop(pq);
+        node_free(node);
         heap_pprint(pq, stdout);
     }
 
