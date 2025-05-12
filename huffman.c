@@ -298,6 +298,8 @@ int main(void) {
     Node *root = heap_pop(pq);
     node_pprint(root, 0, stdout);
 
+    printf("--------------------------------\n");
+
     Code table[SYMBOL_SIZE] = {0};
     Stack *st = stack_new(node_count);
     if (!st) {
@@ -368,6 +370,15 @@ int main(void) {
         code_print(code, stdout);
         fputc('\n', stdout);
     }
+
+    printf("--------------------------------\n");
+
+    for (size_t i = 0; i < len; ++i) {
+        char ch = s[i];
+        Code *code = &table[(size_t)ch];
+        code_print(code, stdout);
+    }
+    fputc('\n', stdout);
 
     stack_free(st);
     node_free(root);
