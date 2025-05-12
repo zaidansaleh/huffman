@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define INPUT_INITIAL_CAPACITY 128
 #define SYMBOL_SIZE 128
 #define UINT8_WIDTH 8
 
@@ -389,29 +390,72 @@ int compress(const char *input, size_t char_count, const Code *table, FILE *stre
     return 0;
 }
 
+char *input_new(FILE *stream) {
+    size_t capacity = INPUT_INITIAL_CAPACITY;
+    size_t length = 0;
+    char *input = malloc(sizeof(char) * capacity);
+    if (!input) {
+        return NULL;
+    }
+
+    int ch;
+    while ((ch = fgetc(stream)) != EOF) {
+        // Make sure length + 1 bytes are available (actual length plus null terminator).
+        if (length + 1 >= capacity) {
+            capacity *= 2;
+            void *tmp = realloc(input, sizeof(char) * capacity);
+            if (!tmp) {
+                free(input);
+                return NULL;
+            }
+            input = tmp;
+        }
+        input[length++] = ch;
+    }
+    input[length] = '\0';
+
+    return input;
+}
+
+void input_free(char *input) {
+    free(input);
+}
+
 int main(int argc, const char *argv[]) {
     int retcode = 0;
-    const char *input;
+    FILE *input_file = NULL;
+    FILE *output_file = NULL;
     Node *root = NULL;
-    FILE *output = NULL;
 
     if (argc < 2) {
-        fprintf(stderr, "error: input must be provided\n");
-        retcode = 1;
-        goto cleanup;
-    } 
-    input = argv[1];
+        input_file = stdin;
+    } else {
+        const char *pathname = argv[1];
+        input_file = fopen(pathname, "r");
+        if (!input_file) {
+            fprintf(stderr, "error: input file '%s' open failed\n", pathname);
+            retcode = 1;
+            goto cleanup;
+        }
+    }
 
     if (argc < 3) {
-        output = stdout;
+        output_file = stdout;
     } else {
         const char *pathname = argv[2];
-        output = fopen(pathname, "w");
-        if (!output) {
+        output_file = fopen(pathname, "w");
+        if (!output_file) {
             fprintf(stderr, "error: output file '%s' open failed\n", pathname);
             retcode = 1;
             goto cleanup;
         }
+    }
+
+    char *input = input_new(input_file);
+    if (!input) {
+        fprintf(stderr, "error: input contents read failed\n");
+        retcode = 1;
+        goto cleanup;
     }
 
     size_t char_count;
@@ -433,15 +477,21 @@ int main(int argc, const char *argv[]) {
         goto cleanup;
     }
 
-    if (compress(input, char_count, table, output) < 0) {
+    if (compress(input, char_count, table, output_file) < 0) {
         fprintf(stderr, "error: compress failed\n");
         retcode = 1;
         goto cleanup;
     }
 
 cleanup:
-    if (output) {
-        fclose(output);
+    if (input_file) {
+        fclose(input_file);
+    }
+    if (output_file) {
+        fclose(output_file);
+    }
+    if (input) {
+        input_free(input);
     }
     if (root) {
         node_free(root);
