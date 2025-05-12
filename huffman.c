@@ -239,10 +239,9 @@ void stack_free(Stack *stack) {
     free(stack);
 }
 
-void freq_table_build(const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
+void freq_table_build(size_t *freq, const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
     *char_count = strlen(input);
     *symbol_count = 0;
-    size_t freq[SYMBOL_SIZE] = {0};
 
     for (size_t i = 0; i < *char_count; ++i) {
         size_t *element = &freq[(size_t)input[i]];
@@ -255,22 +254,14 @@ void freq_table_build(const char *input, size_t *char_count, size_t *symbol_coun
     *node_count = 2 * *symbol_count - 1;
 }
 
-Node *huffman_tree_build(const char *input) {
+Node *huffman_tree_build(const size_t *freq, size_t node_count) {
     Node *root = NULL;
-    size_t len = strlen(input);
-    size_t freq[SYMBOL_SIZE] = {0};
-    size_t symbol_count = 0;
 
-    for (size_t i = 0; i < len; ++i) {
-        size_t *element = &freq[(size_t)input[i]];
-        if (*element == 0) {
-            symbol_count++;
-        }
-        *element += 1;
+    Heap *pq = heap_new(node_count, compare);
+    if (!pq) {
+        goto cleanup;
     }
 
-    size_t node_count = 2 * symbol_count - 1;
-    Heap *pq = heap_new(node_count, compare);
     for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
         if (freq[ch] == 0) {
             continue;
@@ -303,7 +294,9 @@ Node *huffman_tree_build(const char *input) {
     root = heap_pop(pq);
 
 cleanup:
-    heap_free(pq);
+    if (pq) {
+        heap_free(pq);
+    }
     return root;
 }
 
@@ -459,12 +452,13 @@ int main(int argc, const char *argv[]) {
         goto cleanup;
     }
 
+    size_t freq[SYMBOL_SIZE] = {0};
     size_t char_count;
     size_t symbol_count;
     size_t node_count;
-    freq_table_build(input, &char_count, &symbol_count, &node_count);
+    freq_table_build(freq, input, &char_count, &symbol_count, &node_count);
 
-    root = huffman_tree_build(input);
+    root = huffman_tree_build(freq, node_count);
     if (!root) {
         fprintf(stderr, "error: huffman tree build failed\n");
         retcode = 1;
