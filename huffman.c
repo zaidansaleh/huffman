@@ -425,6 +425,7 @@ int main(int argc, const char *argv[]) {
     int retcode = 0;
     FILE *input_file = NULL;
     FILE *output_file = NULL;
+    char *input = NULL;
     Node *root = NULL;
 
     if (argc < 2) {
@@ -451,7 +452,7 @@ int main(int argc, const char *argv[]) {
         }
     }
 
-    char *input = input_new(input_file);
+    input = input_new(input_file);
     if (!input) {
         fprintf(stderr, "error: input contents read failed\n");
         retcode = 1;
