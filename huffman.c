@@ -5,6 +5,7 @@
 #include <string.h>
 
 #define SYMBOL_SIZE 128
+#define UINT8_WIDTH 8
 
 typedef struct Node {
     char symbol;
@@ -182,13 +183,8 @@ typedef struct {
     uint8_t length;
 } Code;
 
-void code_append_zero(Code *code) {
-    code->bits = code->bits << 1;
-    code->length++;
-}
-
-void code_append_one(Code *code) {
-    code->bits = code->bits << 1 | 1;
+void code_append(Code *code, uint8_t bit) {
+    code->bits = code->bits << 1 | bit;
     code->length++;
 }
 
@@ -337,7 +333,7 @@ int main(void) {
 
         if (node->left) {
             Code code = element.code;
-            code_append_zero(&code);
+            code_append(&code, 0);
             StackElement el = {.node = node->left, .code = code};
             if (stack_push(st, el) < 0) {
                 fprintf(stderr, "error: stack push failed\n");
@@ -349,7 +345,7 @@ int main(void) {
         }
         if (node->right) {
             Code code = element.code;
-            code_append_one(&code);
+            code_append(&code, 1);
             StackElement el = {.node = node->right, .code = code};
             if (stack_push(st, el) < 0) {
                 fprintf(stderr, "error: stack push failed\n");
@@ -380,6 +376,50 @@ int main(void) {
     }
     fputc('\n', stdout);
 
+    FILE *output = fopen("out", "w");
+    if (!output) {
+        fprintf(stderr, "error: output file open failed\n");
+        stack_free(st);
+        node_free(root);
+        heap_free(pq);
+        return 1;
+    }
+
+    Code byte = {.bits = 0, .length = 0};
+    for (size_t i = 0; i < len; ++i) {
+        char ch = s[i];
+        Code *code = &table[(size_t)ch];
+        for (int i = code->length - 1; i >= 0; --i) {
+            uint8_t bit = (code->bits >> i) & 1;
+            code_append(&byte, bit);
+            if (byte.length == UINT8_WIDTH) {
+                if (!fwrite(&byte.bits, 1, 1, output)) {
+                    fprintf(stderr, "error: output file write failed\n");
+                    fclose(output);
+                    stack_free(st);
+                    node_free(root);
+                    heap_free(pq);
+                    return 1;
+                }
+                byte.bits = 0;
+                byte.length = 0;
+            }
+        }
+    }
+    if (byte.length != UINT8_WIDTH) {
+        uint8_t remaining = UINT8_WIDTH - byte.length;
+        byte.bits = byte.bits << remaining;
+        if (!fwrite(&byte.bits, 1, 1, output)) {
+            fprintf(stderr, "error: output file write failed\n");
+            fclose(output);
+            stack_free(st);
+            node_free(root);
+            heap_free(pq);
+            return 1;
+        }
+    }
+
+    fclose(output);
     stack_free(st);
     node_free(root);
     heap_free(pq);
