@@ -389,12 +389,31 @@ int compress(const char *input, size_t char_count, const Code *table, FILE *stre
     return 0;
 }
 
-int main(void) {
+int main(int argc, const char *argv[]) {
     int retcode = 0;
+    const char *input;
     Node *root = NULL;
     FILE *output = NULL;
 
-    const char *input = "hello";
+    if (argc < 2) {
+        fprintf(stderr, "error: input must be provided\n");
+        retcode = 1;
+        goto cleanup;
+    } 
+    input = argv[1];
+
+    if (argc < 3) {
+        output = stdout;
+    } else {
+        const char *pathname = argv[2];
+        output = fopen(pathname, "w");
+        if (!output) {
+            fprintf(stderr, "error: output file '%s' open failed\n", pathname);
+            retcode = 1;
+            goto cleanup;
+        }
+    }
+
     size_t char_count;
     size_t symbol_count;
     size_t node_count;
@@ -410,13 +429,6 @@ int main(void) {
     Code table[SYMBOL_SIZE] = {0};
     if (code_table_build(table, root, node_count) < 0) {
         fprintf(stderr, "error: code table build failed\n");
-        retcode = 1;
-        goto cleanup;
-    }
-
-    output = fopen("out", "w");
-    if (!output) {
-        fprintf(stderr, "error: output file open failed\n");
         retcode = 1;
         goto cleanup;
     }
