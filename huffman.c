@@ -9,6 +9,32 @@
 #define SYMBOL_SIZE 128
 #define UINT8_WIDTH 8
 
+#define DEBUG_FREQ (1 << 0)
+#define DEBUG_TREE (1 << 1)
+#define DEBUG_CODE (1 << 2)
+
+const char *escape_char(char ch) {
+    static char escape_char_buf[2];
+    if (isprint(ch)) {
+        escape_char_buf[0] = ch;
+        escape_char_buf[1] = '\0';
+        return escape_char_buf;
+    }
+    switch (ch) {
+    case '\n': return "\\n";
+    case '\t': return "\\t";
+    case '\r': return "\\r";
+    case '\b': return "\\b";
+    case '\f': return "\\f";
+    case '\v': return "\\v";
+    case '\\': return "\\\\";
+    case '\'': return "\\'";
+    case '\"': return "\\\"";
+    case '\0': return "\\0";
+    }
+    return NULL;
+}
+
 typedef struct Node {
     char symbol;
     size_t count;
@@ -49,7 +75,11 @@ void node_free(Node *node) {
 }
 
 void node_print(const Node *node, FILE *stream) {
-    fprintf(stream, "('%c': %ld)", node->symbol, node->count);
+    if (node->left && node->right) {
+        fprintf(stream, "(%ld)", node->count);
+    } else {
+        fprintf(stream, "('%s': %ld)", escape_char(node->symbol), node->count);
+    }
 }
 
 void node_pprint(const Node *node, int indent, FILE *stream) {
@@ -240,7 +270,7 @@ void stack_free(Stack *stack) {
     free(stack);
 }
 
-void freq_table_build(size_t *freq, const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
+void freq_table_build(int debug, size_t *freq, const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
     *char_count = strlen(input);
     *symbol_count = 0;
 
@@ -253,9 +283,19 @@ void freq_table_build(size_t *freq, const char *input, size_t *char_count, size_
     }
 
     *node_count = 2 * *symbol_count - 1;
+
+    if (debug & DEBUG_FREQ) {
+        fprintf(stderr, "Freq table:\n");
+        for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
+            size_t value = freq[ch];
+            if (value > 0) {
+                fprintf(stderr, "'%s' -> %ld\n", escape_char(ch), value);
+            }
+        }
+    }
 }
 
-Node *huffman_tree_build(const size_t *freq, size_t node_count) {
+Node *huffman_tree_build(int debug, const size_t *freq, size_t node_count) {
     Node *root = NULL;
 
     Heap *pq = heap_new(node_count, compare);
@@ -294,6 +334,11 @@ Node *huffman_tree_build(const size_t *freq, size_t node_count) {
     }
     root = heap_pop(pq);
 
+    if (debug & DEBUG_TREE) {
+        fprintf(stderr, "Huffman tree:\n");
+        node_pprint(root, 0, stderr);
+    }
+
 cleanup:
     if (pq) {
         heap_free(pq);
@@ -301,7 +346,7 @@ cleanup:
     return root;
 }
 
-int code_table_build(Code *table, Node *root, size_t node_count) {
+int code_table_build(int debug, Code *table, Node *root, size_t node_count) {
     int retcode = 0;
     Stack *st = stack_new(node_count);
     if (!st) {
@@ -345,6 +390,18 @@ int code_table_build(Code *table, Node *root, size_t node_count) {
             if (stack_push(st, el) < 0) {
                 retcode = -1;
                 goto cleanup;
+            }
+        }
+    }
+
+    if (debug & DEBUG_CODE) {
+        fprintf(stderr, "Code table:\n");
+        for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
+            Code *code = &table[ch];
+            if (code->length > 0) {
+                fprintf(stderr, "'%s' -> ", escape_char(ch));
+                code_print(code, stderr);
+                fputc('\n', stderr);
             }
         }
     }
@@ -418,23 +475,40 @@ void input_free(char *input) {
 int main(int argc, const char *argv[]) {
     int retcode = 0;
     bool show_help = false;
+    int debug = 0;
     FILE *input_file = NULL;
     FILE *output_file = NULL;
     char *input = NULL;
     Node *root = NULL;
 
-    const char *program_name = argv[0];
+    int arg_cursor = 0;
+    const char *program_name = argv[arg_cursor++];
 
     for (int i = 0; i < argc; ++i) {
         const char *arg = argv[i];
         if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             show_help = true;
+            arg_cursor += 1;
+        } else if (arg[0] == '-' && arg[1] == 'd') {
+            const char *debug_level = arg + 2;
+            if (strcmp(debug_level, "freq") == 0) {
+                debug |= DEBUG_FREQ;
+                arg_cursor += 1;
+            }
+            if (strcmp(debug_level, "tree") == 0) {
+                debug |= DEBUG_TREE;
+                arg_cursor += 1;
+            }
+            if (strcmp(debug_level, "code") == 0) {
+                debug |= DEBUG_CODE;
+                arg_cursor += 1;
+            }
         }
     }
 
     if (show_help) {
         printf(
-            "Usage: %s [input] [output]\n"
+            "Usage: %s [options] [input] [output]\n"
             "Compress input file to output file using Huffman coding.\n"
             "\n"
             "Arguments:\n"
@@ -442,19 +516,25 @@ int main(int argc, const char *argv[]) {
             "  %-10s %s\n"
             "\n"
             "Options:\n"
+            "  %-14s %s\n"
+            "  %-14s %s\n"
+            "  %-14s %s\n"
             "  %-14s %s\n",
             program_name,
             "input", "Input file (stdin if omitted)",
             "output", "Output file (stdout if omitted)",
-            "-h, --help", "Display this help message"
+            "-h, --help", "Display this help message",
+            "-dfreq", "Prints the frequency table to stderr",
+            "-dtree", "Prints the Huffman tree to stderr",
+            "-dcode", "Prints the code table to stderr"
         );
         goto cleanup;
     }
 
-    if (argc < 2) {
+    if (arg_cursor >= argc) {
         input_file = stdin;
     } else {
-        const char *pathname = argv[1];
+        const char *pathname = argv[arg_cursor++];
         input_file = fopen(pathname, "r");
         if (!input_file) {
             fprintf(stderr, "error: input file '%s' open failed\n", pathname);
@@ -463,10 +543,10 @@ int main(int argc, const char *argv[]) {
         }
     }
 
-    if (argc < 3) {
+    if (arg_cursor >= argc) {
         output_file = stdout;
     } else {
-        const char *pathname = argv[2];
+        const char *pathname = argv[arg_cursor++];
         output_file = fopen(pathname, "w");
         if (!output_file) {
             fprintf(stderr, "error: output file '%s' open failed\n", pathname);
@@ -486,9 +566,9 @@ int main(int argc, const char *argv[]) {
     size_t char_count;
     size_t symbol_count;
     size_t node_count;
-    freq_table_build(freq, input, &char_count, &symbol_count, &node_count);
+    freq_table_build(debug, freq, input, &char_count, &symbol_count, &node_count);
 
-    root = huffman_tree_build(freq, node_count);
+    root = huffman_tree_build(debug, freq, node_count);
     if (!root) {
         fprintf(stderr, "error: huffman tree build failed\n");
         retcode = 1;
@@ -496,7 +576,7 @@ int main(int argc, const char *argv[]) {
     }
 
     Code table[SYMBOL_SIZE] = {0};
-    if (code_table_build(table, root, node_count) < 0) {
+    if (code_table_build(debug, table, root, node_count) < 0) {
         fprintf(stderr, "error: code table build failed\n");
         retcode = 1;
         goto cleanup;
