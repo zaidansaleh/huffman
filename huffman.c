@@ -13,12 +13,17 @@ typedef struct Node {
     struct Node *right;
 } Node;
 
+void node_print(const Node *node, FILE *stream) {
+    fprintf(stream, "('%c': %ld)", node->symbol, node->count);
+}
+
 void node_pprint(const Node *node, int indent, FILE *stream) {
     for (int i = 0; i < 2 * indent; ++i) {
         fputc(' ', stream);
     }
 
-    fprintf(stream, "%c %ld\n", node->symbol, node->count);
+    node_print(node, stream);
+    fputc('\n', stream);
     if (node->left && node->right) {
         node_pprint(node->left, indent + 1, stream);
         node_pprint(node->right, indent + 1, stream);
@@ -32,16 +37,36 @@ typedef struct {
     Node data[];
 } Heap;
 
-size_t heap_left_child(size_t i) {
-    return 2 * i + 1;
+Node *heap_left_child(Heap *heap, const Node *node) {
+    size_t i = node - heap->data;
+    if (i >= heap->length) {
+        return NULL;
+    }
+    size_t j = 2 * i + 1;
+    if (j >= heap->length) {
+        return NULL;
+    }
+    return &heap->data[j];
 }
 
-size_t heap_right_child(size_t i) {
-    return 2 * i + 2;
+Node *heap_right_child(Heap *heap, const Node *node) {
+    size_t i = node - heap->data;
+    if (i >= heap->length) {
+        return NULL;
+    }
+    size_t j = 2 * i + 2;
+    if (j >= heap->length) {
+        return NULL;
+    }
+    return &heap->data[j];
 }
 
-size_t heap_parent(size_t i) {
-    return (i - 1) / 2;
+Node *heap_parent(Heap *heap, const Node *node) {
+    size_t i = node - heap->data;
+    if (i == 0 || i >= heap->length) {
+        return NULL;
+    }
+    return &heap->data[(i - 1) / 2];
 }
 
 Heap *heap_new(size_t capacity, int (*comparator)(const Node *, const Node *)) {
@@ -60,18 +85,50 @@ int heap_insert(Heap *heap, Node value) {
     if (heap->length >= heap->capacity) {
         return -1;
     }
-    Node *current = &heap->data[heap->length++];
-    *current = value;
-    if (heap->length == 1) {
-        return 0;
-    }
-    Node *parent = &heap->data[heap_parent(current - heap->data)];
-    while ((*heap->comparator)(current, parent) < 0 || current == heap->data) {
-        Node tmp = *current;
-        *current = *parent;
+    Node *hole = &heap->data[heap->length++];
+    *hole = value;
+    Node *parent;
+    while ((parent = heap_parent(heap, hole)) && (*heap->comparator)(hole, parent) < 0) {
+        Node tmp = *hole;
+        *hole = *parent;
         *parent = tmp;
+        hole = parent;
     }
     return 0;
+}
+
+Node heap_pop(Heap *heap) {
+    Node *hole = &heap->data[0];
+    Node root = *hole;
+    while (1) {
+        Node *child;
+        Node *left = heap_left_child(heap, hole);
+        Node *right = heap_right_child(heap, hole);
+        if (left && right && left->count && right->count) {
+            child = (*heap->comparator)(left, right) < 0 ? left : right;
+        } else if (left && left->count) {
+            child = left;
+        } else if (right && right->count) {
+            child = right;
+        } else {
+            break;
+        }
+        Node tmp = *hole;
+        *hole = *child;
+        *child = tmp;
+        hole = child;
+    }
+    *hole = heap->data[--heap->length];
+    return root;
+}
+
+void heap_pprint(const Heap *heap, FILE *stream) {
+    for (size_t i = 0; i < heap->length; ++i) {
+        node_print(&heap->data[i], stream);
+        fputc(' ', stream);
+    }
+    fprintf(stream, "<%ld empty>", heap->capacity - heap->length);
+    fputc('\n', stream);
 }
 
 void heap_free(Heap *heap) {
@@ -114,8 +171,12 @@ int main(void) {
         }
     }
 
-    for (size_t i = 0; i < pq->length; ++i) {
-        node_pprint(&pq->data[i], 0, stdout);
+    heap_pprint(pq, stdout);
+
+    while (pq->length > 0) {
+        printf("--------------------------------\n");
+        heap_pop(pq);
+        heap_pprint(pq, stdout);
     }
 
     heap_free(pq);
