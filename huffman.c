@@ -102,14 +102,14 @@ Node **heap_parent(Heap *heap, Node **node) {
 }
 
 Heap *heap_new(size_t capacity, int (*comparator)(const Node *, const Node *)) {
-    Heap *heap = malloc(sizeof(Heap) + sizeof(Node) * capacity);
+    Heap *heap = malloc(sizeof(Heap) + sizeof(Node *) * capacity);
     if (!heap) {
         return NULL;
     }
     heap->comparator = comparator;
     heap->capacity = capacity;
     heap->length = 0;
-    memset(heap->data, 0, sizeof(Node) * capacity);
+    memset(heap->data, 0, sizeof(Node *) * capacity);
     return heap;
 }
 
