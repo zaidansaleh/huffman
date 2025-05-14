@@ -211,6 +211,7 @@ int compare(const Node *a, const Node *b) {
 }
 
 typedef struct {
+    char symbol;
     uint32_t bits;
     uint8_t length;
 } Code;
@@ -221,6 +222,7 @@ void code_append(Code *code, uint8_t bit) {
 }
 
 void code_print(const Code *code, FILE *stream) {
+    fprintf(stream, "'%s' -> ", escape_char(code->symbol));
     for (int i = code->length - 1; i >= 0; --i) {
         uint8_t bit = (code->bits >> i) & 1;
         char ch = bit ? '1' : '0';
@@ -346,49 +348,108 @@ cleanup:
     return root;
 }
 
-int code_table_build(int debug, Code *table, Node *root, size_t node_count) {
-    int retcode = 0;
-    Stack *st = stack_new(node_count);
+typedef struct {
+    size_t capacity;
+    size_t length;
+    Code data[];
+} CodeTable;
+
+CodeTable *code_table_new(size_t capacity) {
+    CodeTable *table = malloc(sizeof(CodeTable) + sizeof(Code) * capacity);
+    if (!table) {
+        return NULL;
+    }
+    table->capacity = capacity;
+    table->length = 0;
+    memset(table->data, 0, sizeof(Code) * capacity);
+    return table;
+}
+
+int code_table_insert(CodeTable *table, Code *code) {
+    if (table->length >= table->capacity) {
+        return -1;
+    }
+    table->data[table->length++] = *code;
+    return 0;
+}
+
+Code *code_table_get(CodeTable *table, size_t index) {
+    if (index >= table->length) {
+        return NULL;
+    }
+    return &table->data[index];
+}
+
+Code *code_table_find(CodeTable *table, char symbol) {
+    for (size_t i = 0; i < table->length; ++i) {
+        Code *code = code_table_get(table, i);
+        if (code && code->symbol == symbol) {
+            return code;
+        }
+    }
+    return NULL;
+}
+
+void code_table_free(CodeTable *table) {
+    free(table);
+}
+
+CodeTable *code_table_build(int debug, Node *root, size_t node_count) {
+    bool error = false;
+    CodeTable *table = NULL;
+    Stack *st = NULL;
+
+    table = code_table_new(node_count);
+    if (!table) {
+        error = true;
+        goto cleanup;
+    }
+
+    st = stack_new(node_count);
     if (!st) {
-        retcode = -1;
+        error = true;
         goto cleanup;
     }
 
     StackElement root_element = {
         .node = root,
-        .code = {.bits = 0, .length = 0},
+        .code = {.symbol = root->symbol, .bits = 0, .length = 0},
     };
     if (stack_push(st, root_element) < 0) {
-        retcode = -1;
         goto cleanup;
     }
     while (st->length > 0) {
         StackElement element = stack_pop(st);
         if (!element.node) {
-            retcode = -1;
+            error = true;
             goto cleanup;
         }
 
         Node *node = element.node;
         if (!node->left && !node->right) {
-            table[(size_t)node->symbol] = element.code;
+            if (code_table_insert(table, &element.code) < 0) {
+                error = true;
+                goto cleanup;
+            }
         }
 
         if (node->left) {
             Code code = element.code;
+            code.symbol = node->left->symbol;
             code_append(&code, 0);
             StackElement el = {.node = node->left, .code = code};
             if (stack_push(st, el) < 0) {
-                retcode = -1;
+                error = true;
                 goto cleanup;
             }
         }
         if (node->right) {
             Code code = element.code;
+            code.symbol = node->right->symbol;
             code_append(&code, 1);
             StackElement el = {.node = node->right, .code = code};
             if (stack_push(st, el) < 0) {
-                retcode = -1;
+                error = true;
                 goto cleanup;
             }
         }
@@ -396,10 +457,9 @@ int code_table_build(int debug, Code *table, Node *root, size_t node_count) {
 
     if (debug & DEBUG_CODE) {
         fprintf(stderr, "Code table:\n");
-        for (uint8_t ch = 0; ch < SYMBOL_SIZE; ++ch) {
-            Code *code = &table[ch];
-            if (code->length > 0) {
-                fprintf(stderr, "'%s' -> ", escape_char(ch));
+        for (size_t i = 0; i < table->length; ++i) {
+            Code *code = code_table_get(table, i);
+            if (code) {
                 code_print(code, stderr);
                 fputc('\n', stderr);
             }
@@ -410,14 +470,21 @@ cleanup:
     if (st) {
         stack_free(st);
     }
-    return retcode;
+    if (error) {
+        code_table_free(table);
+        return NULL;
+    }
+    return table;
 }
 
-int compress(const char *input, size_t char_count, const Code *table, FILE *stream) {
-    Code byte = {.bits = 0, .length = 0};
+int compress(const char *input, size_t char_count, CodeTable *table, FILE *stream) {
+    Code byte = {.symbol = '\0', .bits = 0, .length = 0};
     for (size_t i = 0; i < char_count; ++i) {
         char ch = input[i];
-        const Code *code = &table[(size_t)ch];
+        Code *code = code_table_find(table, ch);
+        if (!code) {
+            return -1;
+        }
         for (int i = code->length - 1; i >= 0; --i) {
             uint8_t bit = (code->bits >> i) & 1;
             code_append(&byte, bit);
@@ -480,6 +547,7 @@ int main(int argc, const char *argv[]) {
     FILE *output_file = NULL;
     char *input = NULL;
     Node *root = NULL;
+    CodeTable *table = NULL;
 
     int arg_cursor = 0;
     const char *program_name = argv[arg_cursor++];
@@ -575,8 +643,8 @@ int main(int argc, const char *argv[]) {
         goto cleanup;
     }
 
-    Code table[SYMBOL_SIZE] = {0};
-    if (code_table_build(debug, table, root, node_count) < 0) {
+    table = code_table_build(debug, root, node_count);
+    if (!table) {
         fprintf(stderr, "error: code table build failed\n");
         retcode = 1;
         goto cleanup;
@@ -600,6 +668,9 @@ cleanup:
     }
     if (root) {
         node_free(root);
+    }
+    if (table) {
+        code_table_free(table);
     }
     return retcode;
 }
