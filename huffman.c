@@ -477,6 +477,46 @@ cleanup:
     return table;
 }
 
+int code_table_compare(const void *a, const void *b) {
+    const Code *code_a = (Code *)a;
+    const Code *code_b = (Code *)b;
+    if (code_a->length != code_b->length) {
+        return (int)code_a->length - (int)code_b->length;
+    }
+    return (int)code_a->symbol - (int)code_b->symbol;
+}
+
+int code_table_canonicalize(int debug, CodeTable *table) {
+    qsort(table->data, table->length, sizeof(Code), code_table_compare);
+
+    Code cursor = {.symbol = '\0', .bits = 0, .length = 0};
+    for (size_t i = 0; i < table->length; ++i) {
+        Code *current = code_table_get(table, i);
+        if (!current) {
+            return -1;
+        }
+        if (current->length > cursor.length) {
+            cursor.bits <<= current->length - cursor.length;
+            cursor.length = current->length;
+        }
+        current->bits = cursor.bits;
+        cursor.bits += 1;
+    }
+
+    if (debug & DEBUG_CODE) {
+        fprintf(stderr, "Canonicalized code table:\n");
+        for (size_t i = 0; i < table->length; ++i) {
+            Code *code = code_table_get(table, i);
+            if (code) {
+                code_print(code, stderr);
+                fputc('\n', stderr);
+            }
+        }
+    }
+
+    return 0;
+}
+
 int compress(const char *input, size_t char_count, CodeTable *table, FILE *stream) {
     Code byte = {.symbol = '\0', .bits = 0, .length = 0};
     for (size_t i = 0; i < char_count; ++i) {
@@ -646,6 +686,12 @@ int main(int argc, const char *argv[]) {
     table = code_table_build(debug, root, node_count);
     if (!table) {
         fprintf(stderr, "error: code table build failed\n");
+        retcode = 1;
+        goto cleanup;
+    }
+
+    if (code_table_canonicalize(debug, table) < 0) {
+        fprintf(stderr, "error: code table canonicalization failed\n");
         retcode = 1;
         goto cleanup;
     }
