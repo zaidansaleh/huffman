@@ -42,6 +42,15 @@ typedef struct Node {
     struct Node *right;
 } Node;
 
+Node *node_new() {
+    Node *node = malloc(sizeof(Node));
+    if (!node) {
+        return NULL;
+    }
+    memset(node, 0, sizeof(Node));
+    return node;
+}
+
 Node *node_new_leaf(char symbol, size_t count) {
     Node *node = malloc(sizeof(Node));
     if (!node) {
@@ -275,6 +284,7 @@ void stack_free(Stack *stack) {
 typedef struct {
     size_t capacity;
     size_t length;
+    size_t position;
     char data[];
 } InputBuffer;
 
@@ -285,6 +295,7 @@ InputBuffer *input_buffer_new(FILE *stream) {
     }
     inbuf->capacity = INPUT_INITIAL_CAPACITY;
     inbuf->length = 0;
+    inbuf->position = 0;
 
     int ch;
     while ((ch = fgetc(stream)) != EOF) {
@@ -334,7 +345,7 @@ void freq_table_build(int debug, size_t *freq, InputBuffer *inbuf, size_t *symbo
     }
 }
 
-Node *huffman_tree_build(int debug, const size_t *freq, size_t node_count) {
+Node *huffman_tree_from_freq(int debug, const size_t *freq, size_t node_count) {
     Node *root = NULL;
 
     Heap *pq = heap_new(node_count, compare);
@@ -431,7 +442,7 @@ void code_table_free(CodeTable *table) {
     free(table);
 }
 
-CodeTable *code_table_build(int debug, Node *root, size_t node_count) {
+CodeTable *code_table_from_huffman_tree(int debug, Node *root, size_t node_count) {
     bool error = false;
     CodeTable *table = NULL;
     Stack *st = NULL;
@@ -514,6 +525,56 @@ cleanup:
     return table;
 }
 
+CodeTable *code_table_from_compressed(int debug, InputBuffer *inbuf, size_t *char_count) {
+    bool error = false;
+    CodeTable *table = NULL;
+
+    memcpy(char_count, &inbuf->data[inbuf->position++], sizeof(uint8_t));
+    uint8_t symbol_count;
+    memcpy(&symbol_count, &inbuf->data[inbuf->position++], sizeof(uint8_t));
+
+    table = code_table_new(symbol_count);
+    if (!table) {
+        error = true;
+        goto cleanup;
+    }
+
+    Code cursor = {.symbol = '\0', .bits = 0, .length = 0};
+    for (uint8_t i = 0; i < symbol_count; ++i) {
+        Code current = {.symbol = '\0', .bits = 0, .length = 0};
+        memcpy(&current.symbol, &inbuf->data[inbuf->position++], sizeof(char));
+        memcpy(&current.length, &inbuf->data[inbuf->position++], sizeof(uint8_t));
+        if (current.length > cursor.length) {
+            cursor.bits <<= current.length - cursor.length;
+            cursor.length = current.length;
+        }
+        current.bits = cursor.bits;
+        cursor.bits += 1;
+        if (code_table_insert(table, &current) < 0) {
+            error = true;
+            goto cleanup;
+        }
+    }
+
+    if (debug & DEBUG_CODE) {
+        fprintf(stderr, "Code table:\n");
+        for (size_t i = 0; i < table->length; ++i) {
+            Code *code = code_table_get(table, i);
+            if (code) {
+                code_print(code, stderr);
+                fputc('\n', stderr);
+            }
+        }
+    }
+
+cleanup:
+    if (error) {
+        code_table_free(table);
+        return NULL;
+    }
+    return table;
+}
+
 int code_table_compare(const void *a, const void *b) {
     const Code *code_a = (Code *)a;
     const Code *code_b = (Code *)b;
@@ -554,7 +615,76 @@ int code_table_canonicalize(int debug, CodeTable *table) {
     return 0;
 }
 
+Node *huffman_tree_from_code_table(int debug, CodeTable *table) {
+    bool error = false;
+    Node *root = NULL;
+
+    root = node_new();
+    if (!root) {
+        error = true;
+        goto cleanup;
+    }
+
+    for (size_t i = 0; i < table->length; ++i) {
+        Node *current = root;
+        Code *code = code_table_get(table, i);
+        if (!code) {
+            error = true;
+            goto cleanup;
+        }
+        for (int i = code->length - 1; i >= 0; --i) {
+            uint8_t bit = (code->bits >> i) & 1;
+            switch (bit) {
+            case 0:
+                if (!current->left) {
+                    current->left = node_new();
+                }
+                current = current->left;
+                break;
+            case 1:
+                if (!current->right) {
+                    current->right = node_new();
+                }
+                current = current->right;
+                break;
+            }
+        }
+        current->symbol = code->symbol;
+    }
+
+    if (debug & DEBUG_TREE) {
+        fprintf(stderr, "Huffman tree:\n");
+        node_pprint(root, 0, stderr);
+    }
+
+cleanup:
+    if (error) {
+        node_free(root);
+        return NULL;
+    }
+    return root;
+}
+
 int compress(InputBuffer *inbuf, CodeTable *table, FILE *stream) {
+    if (fputc((uint8_t)inbuf->length, stream) == EOF) {
+        return -1;
+    }
+    if (fputc(table->length, stream) == EOF) {
+        return -1;
+    }
+    for (size_t i = 0; i < table->length; ++i) {
+        Code *code = code_table_get(table, i);
+        if (!code) {
+            return -1;
+        }
+        if (fputc(code->symbol, stream) == EOF) {
+            return -1;
+        }
+        if (fputc(code->length, stream) == EOF) {
+            return -1;
+        }
+    }
+
     Code byte = {.symbol = '\0', .bits = 0, .length = 0};
     for (size_t i = 0; i < inbuf->length; ++i) {
         char ch = inbuf->data[i];
@@ -585,8 +715,42 @@ int compress(InputBuffer *inbuf, CodeTable *table, FILE *stream) {
     return 0;
 }
 
+
+int decompress(InputBuffer *inbuf, Node *root, size_t char_count, FILE *stream) {
+    Node *current = root;
+    size_t processed_count = 0;
+    for (size_t i = inbuf->position; i < inbuf->length; ++i) {
+        uint8_t byte = inbuf->data[i];
+        for (int i = UINT8_WIDTH - 1; i >= 0 && processed_count < char_count; --i) {
+            uint8_t bit = (byte >> i) & 1;
+            switch (bit) {
+            case 0:
+                current = current->left;
+                break;
+            case 1:
+                current = current->right;
+                break;
+            }
+            if (!current->left && !current->right) {
+                if (fputc(current->symbol, stream) == EOF) {
+                    return -1;
+                }
+                current = root;
+                processed_count += 1;
+            }
+        }
+    }
+    return 0;
+}
+
+typedef enum {
+    MODE_COMPRESS,
+    MODE_DECOMPRESS,
+} Mode;
+
 int main(int argc, const char *argv[]) {
     int retcode = 0;
+    Mode mode = MODE_COMPRESS;
     bool show_help = false;
     int debug = 0;
     FILE *input_file = NULL;
@@ -602,6 +766,9 @@ int main(int argc, const char *argv[]) {
         const char *arg = argv[i];
         if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             show_help = true;
+            arg_cursor += 1;
+        } else if (strcmp(arg, "-x") == 0 || strcmp(arg, "--decompress") == 0) {
+            mode = MODE_DECOMPRESS;
             arg_cursor += 1;
         } else if (arg[0] == '-' && arg[1] == 'd') {
             const char *debug_level = arg + 2;
@@ -630,14 +797,16 @@ int main(int argc, const char *argv[]) {
             "  %-10s %s\n"
             "\n"
             "Options:\n"
-            "  %-14s %s\n"
-            "  %-14s %s\n"
-            "  %-14s %s\n"
-            "  %-14s %s\n",
+            "  %-17s %s\n"
+            "  %-17s %s\n"
+            "  %-17s %s\n"
+            "  %-17s %s\n"
+            "  %-17s %s\n",
             program_name,
             "input", "Input file (stdin if omitted)",
             "output", "Output file (stdout if omitted)",
             "-h, --help", "Display this help message",
+            "-x, --decompress", "Decompress input instead of compressing",
             "-dfreq", "Prints the frequency table to stderr",
             "-dtree", "Prints the Huffman tree to stderr",
             "-dcode", "Prints the code table to stderr"
@@ -676,35 +845,63 @@ int main(int argc, const char *argv[]) {
         goto cleanup;
     }
 
-    size_t freq[SYMBOL_SIZE] = {0};
-    size_t symbol_count;
-    size_t node_count;
-    freq_table_build(debug, freq, inbuf, &symbol_count, &node_count);
+    switch (mode) {
+    case MODE_COMPRESS: {
+        size_t freq[SYMBOL_SIZE] = {0};
+        size_t symbol_count;
+        size_t node_count;
+        freq_table_build(debug, freq, inbuf, &symbol_count, &node_count);
 
-    root = huffman_tree_build(debug, freq, node_count);
-    if (!root) {
-        fprintf(stderr, "error: huffman tree build failed\n");
-        retcode = 1;
-        goto cleanup;
+        root = huffman_tree_from_freq(debug, freq, node_count);
+        if (!root) {
+            fprintf(stderr, "error: huffman_tree_from_freq failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+
+        table = code_table_from_huffman_tree(debug, root, node_count);
+        if (!table) {
+            fprintf(stderr, "error: code_table_from_huffman_tree failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+
+        if (code_table_canonicalize(debug, table) < 0) {
+            fprintf(stderr, "error: code_table_canonicalize failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+
+        if (compress(inbuf, table, output_file) < 0) {
+            fprintf(stderr, "error: compress failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+        break;
     }
+    case MODE_DECOMPRESS: {
+        size_t char_count;
+        table = code_table_from_compressed(debug, inbuf, &char_count);
+        if (!table) {
+            fprintf(stderr, "error: code_table_from_compressed failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
 
-    table = code_table_build(debug, root, node_count);
-    if (!table) {
-        fprintf(stderr, "error: code table build failed\n");
-        retcode = 1;
-        goto cleanup;
+        root = huffman_tree_from_code_table(debug, table);
+        if (!root) {
+            fprintf(stderr, "error: huffman_tree_from_code_table failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+
+        if (decompress(inbuf, root, char_count, output_file) < 0) {
+            fprintf(stderr, "error: decompress failed\n");
+            retcode = 1;
+            goto cleanup;
+        }
+        break;
     }
-
-    if (code_table_canonicalize(debug, table) < 0) {
-        fprintf(stderr, "error: code table canonicalization failed\n");
-        retcode = 1;
-        goto cleanup;
-    }
-
-    if (compress(inbuf, table, output_file) < 0) {
-        fprintf(stderr, "error: compress failed\n");
-        retcode = 1;
-        goto cleanup;
     }
 
 cleanup:
