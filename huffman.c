@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define FILE_EXTENSION ".huff"
+
 #define INPUT_INITIAL_CAPACITY 128
 #define SYMBOL_SIZE 128
 #define UINT8_WIDTH 8
@@ -786,14 +788,17 @@ int main(int argc, const char *argv[]) {
 
     for (int i = 0; i < argc; ++i) {
         const char *arg = argv[i];
-        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+        if (strcmp(arg, "-c") == 0 || strcmp(arg, "--stdout") == 0) {
+            output_file = stdout;
+            arg_cursor += 1;
+        } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             show_help = true;
             arg_cursor += 1;
-        } else if (strcmp(arg, "-x") == 0 || strcmp(arg, "--decompress") == 0) {
+        } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--decompress") == 0) {
             mode = MODE_DECOMPRESS;
             arg_cursor += 1;
-        } else if (arg[0] == '-' && arg[1] == 'd') {
-            const char *debug_level = arg + 2;
+        } else if (strcmp(arg, "--debug-") == 0) {
+            const char *debug_level = arg + 8;
             if (strcmp(debug_level, "freq") == 0) {
                 debug |= DEBUG_FREQ;
                 arg_cursor += 1;
@@ -811,53 +816,73 @@ int main(int argc, const char *argv[]) {
 
     if (show_help) {
         printf(
-            "Usage: %s [options] [input] [output]\n"
-            "Compress input file to output file using Huffman coding.\n"
-            "\n"
-            "Arguments:\n"
-            "  %-10s %s\n"
-            "  %-10s %s\n"
+            "Usage: %s [options] [file]\n"
+            "Compress input file using Huffman coding.\n"
+            "The output is a new file with the same name as the input plus a .huff suffix.\n"
             "\n"
             "Options:\n"
             "  %-17s %s\n"
             "  %-17s %s\n"
             "  %-17s %s\n"
             "  %-17s %s\n"
+            "  %-17s %s\n"
             "  %-17s %s\n",
             program_name,
-            "input", "Input file (stdin if omitted)",
-            "output", "Output file (stdout if omitted)",
-            "-h, --help", "Display this help message",
-            "-x, --decompress", "Decompress input instead of compressing",
-            "-dfreq", "Prints the frequency table to stderr",
-            "-dtree", "Prints the Huffman tree to stderr",
-            "-dcode", "Prints the code table to stderr"
+            "-c, --stdout", "Write on standard output",
+            "-d, --decompress", "Decompress input instead of compressing",
+            "--debug-freq", "Print the frequency table to stderr",
+            "--debug-tree", "Print the Huffman tree to stderr",
+            "--debug-code", "Print the code table to stderr",
+            "-h, --help", "Display this help message"
         );
         goto cleanup;
     }
 
+    const char *input_pathname;
+    size_t input_pathlen;
     if (arg_cursor >= argc) {
         input_file = stdin;
     } else if (argv[arg_cursor][0] == '-') {
         arg_cursor++;
         input_file = stdin;
     } else {
-        const char *pathname = argv[arg_cursor++];
-        input_file = fopen(pathname, "r");
+        input_pathname = argv[arg_cursor++];
+        input_pathlen = strlen(input_pathname);
+        bool is_suffix_huff = strcmp(input_pathname + input_pathlen - strlen(FILE_EXTENSION), FILE_EXTENSION) == 0;
+        if (mode == MODE_COMPRESS && is_suffix_huff) {
+            fprintf(stderr, "error: suffix already '%s'\n", FILE_EXTENSION);
+            retcode = 1;
+            goto cleanup;
+        }
+        if (mode == MODE_DECOMPRESS && !is_suffix_huff) {
+            fprintf(stderr, "error: unknown suffix on '%s'\n", input_pathname);
+            retcode = 1;
+            goto cleanup;
+        }
+        input_file = fopen(input_pathname, "r");
         if (!input_file) {
-            fprintf(stderr, "error: input file '%s' open failed\n", pathname);
+            fprintf(stderr, "error: input file '%s' open failed\n", input_pathname);
             retcode = 1;
             goto cleanup;
         }
     }
 
-    if (arg_cursor >= argc) {
+    if (input_file == stdin) {
         output_file = stdout;
     } else {
-        const char *pathname = argv[arg_cursor++];
-        output_file = fopen(pathname, "w");
+        char output_pathname[4096] = {0};
+        switch (mode) {
+        case MODE_COMPRESS:
+            memcpy(output_pathname, input_pathname, input_pathlen);
+            strcat(output_pathname, FILE_EXTENSION);
+            break;
+        case MODE_DECOMPRESS:
+            memcpy(output_pathname, input_pathname, input_pathlen - strlen(FILE_EXTENSION));
+            break;
+        }
+        output_file = fopen(output_pathname, "w");
         if (!output_file) {
-            fprintf(stderr, "error: output file '%s' open failed\n", pathname);
+            fprintf(stderr, "error: output file '%s' open failed\n", output_pathname);
             retcode = 1;
             goto cleanup;
         }
