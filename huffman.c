@@ -272,12 +272,49 @@ void stack_free(Stack *stack) {
     free(stack);
 }
 
-void freq_table_build(int debug, size_t *freq, const char *input, size_t *char_count, size_t *symbol_count, size_t *node_count) {
-    *char_count = strlen(input);
+typedef struct {
+    size_t capacity;
+    size_t length;
+    char data[];
+} InputBuffer;
+
+InputBuffer *input_buffer_new(FILE *stream) {
+    InputBuffer *inbuf = malloc(sizeof(InputBuffer) + sizeof(char) * INPUT_INITIAL_CAPACITY);
+    if (!inbuf) {
+        return NULL;
+    }
+    inbuf->capacity = INPUT_INITIAL_CAPACITY;
+    inbuf->length = 0;
+
+    int ch;
+    while ((ch = fgetc(stream)) != EOF) {
+        // Make sure length + 1 bytes are available (actual length plus null terminator).
+        if (inbuf->length + 1 >= inbuf->capacity) {
+            size_t new_capacity = inbuf->capacity * 2;
+            void *new_inbuf = realloc(inbuf, sizeof(InputBuffer) + sizeof(char) * new_capacity);
+            if (!new_inbuf) {
+                free(inbuf);
+                return NULL;
+            }
+            inbuf = new_inbuf;
+            inbuf->capacity = new_capacity;
+        }
+        inbuf->data[inbuf->length++] = ch;
+    }
+    inbuf->data[inbuf->length] = '\0';
+
+    return inbuf;
+}
+
+void input_buffer_free(InputBuffer *inbuf) {
+    free(inbuf);
+}
+
+void freq_table_build(int debug, size_t *freq, InputBuffer *inbuf, size_t *symbol_count, size_t *node_count) {
     *symbol_count = 0;
 
-    for (size_t i = 0; i < *char_count; ++i) {
-        size_t *element = &freq[(size_t)input[i]];
+    for (size_t i = 0; i < inbuf->length; ++i) {
+        size_t *element = &freq[(size_t)inbuf->data[i]];
         if (*element == 0) {
             *symbol_count += 1;
         }
@@ -517,10 +554,10 @@ int code_table_canonicalize(int debug, CodeTable *table) {
     return 0;
 }
 
-int compress(const char *input, size_t char_count, CodeTable *table, FILE *stream) {
+int compress(InputBuffer *inbuf, CodeTable *table, FILE *stream) {
     Code byte = {.symbol = '\0', .bits = 0, .length = 0};
-    for (size_t i = 0; i < char_count; ++i) {
-        char ch = input[i];
+    for (size_t i = 0; i < inbuf->length; ++i) {
+        char ch = inbuf->data[i];
         Code *code = code_table_find(table, ch);
         if (!code) {
             return -1;
@@ -548,44 +585,13 @@ int compress(const char *input, size_t char_count, CodeTable *table, FILE *strea
     return 0;
 }
 
-char *input_new(FILE *stream) {
-    size_t capacity = INPUT_INITIAL_CAPACITY;
-    size_t length = 0;
-    char *input = malloc(sizeof(char) * capacity);
-    if (!input) {
-        return NULL;
-    }
-
-    int ch;
-    while ((ch = fgetc(stream)) != EOF) {
-        // Make sure length + 1 bytes are available (actual length plus null terminator).
-        if (length + 1 >= capacity) {
-            capacity *= 2;
-            void *tmp = realloc(input, sizeof(char) * capacity);
-            if (!tmp) {
-                free(input);
-                return NULL;
-            }
-            input = tmp;
-        }
-        input[length++] = ch;
-    }
-    input[length] = '\0';
-
-    return input;
-}
-
-void input_free(char *input) {
-    free(input);
-}
-
 int main(int argc, const char *argv[]) {
     int retcode = 0;
     bool show_help = false;
     int debug = 0;
     FILE *input_file = NULL;
     FILE *output_file = NULL;
-    char *input = NULL;
+    InputBuffer *inbuf = NULL;
     Node *root = NULL;
     CodeTable *table = NULL;
 
@@ -663,18 +669,17 @@ int main(int argc, const char *argv[]) {
         }
     }
 
-    input = input_new(input_file);
-    if (!input) {
+    inbuf = input_buffer_new(input_file);
+    if (!inbuf) {
         fprintf(stderr, "error: input contents read failed\n");
         retcode = 1;
         goto cleanup;
     }
 
     size_t freq[SYMBOL_SIZE] = {0};
-    size_t char_count;
     size_t symbol_count;
     size_t node_count;
-    freq_table_build(debug, freq, input, &char_count, &symbol_count, &node_count);
+    freq_table_build(debug, freq, inbuf, &symbol_count, &node_count);
 
     root = huffman_tree_build(debug, freq, node_count);
     if (!root) {
@@ -696,7 +701,7 @@ int main(int argc, const char *argv[]) {
         goto cleanup;
     }
 
-    if (compress(input, char_count, table, output_file) < 0) {
+    if (compress(inbuf, table, output_file) < 0) {
         fprintf(stderr, "error: compress failed\n");
         retcode = 1;
         goto cleanup;
@@ -709,8 +714,8 @@ cleanup:
     if (output_file) {
         fclose(output_file);
     }
-    if (input) {
-        input_free(input);
+    if (inbuf) {
+        input_buffer_free(inbuf);
     }
     if (root) {
         node_free(root);
