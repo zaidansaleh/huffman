@@ -35,6 +35,17 @@ const char *escape_char(char ch) {
     return NULL;
 }
 
+uint32_t uint32_be_read(uint8_t *buf) {
+    return buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3];
+}
+
+void uint32_be_write(uint8_t *buf, uint32_t value) {
+    buf[0] = (value >> 24) & 0xFF;
+    buf[1] = (value >> 16) & 0xFF;
+    buf[2] = (value >> 8) & 0xFF;
+    buf[3] = value & 0xFF;
+}
+
 typedef struct Node {
     char symbol;
     size_t count;
@@ -317,6 +328,11 @@ InputBuffer *input_buffer_new(FILE *stream) {
     return inbuf;
 }
 
+void input_buffer_read(InputBuffer *inbuf, uint8_t *dest, size_t len) {
+    memcpy(dest, &inbuf->data[inbuf->position], len);
+    inbuf->position += len;
+}
+
 void input_buffer_free(InputBuffer *inbuf) {
     free(inbuf);
 }
@@ -525,11 +541,14 @@ cleanup:
     return table;
 }
 
-CodeTable *code_table_from_compressed(int debug, InputBuffer *inbuf, size_t *char_count) {
+CodeTable *code_table_from_compressed(int debug, InputBuffer *inbuf, uint32_t *char_count) {
     bool error = false;
     CodeTable *table = NULL;
 
-    memcpy(char_count, &inbuf->data[inbuf->position++], sizeof(uint8_t));
+    uint8_t buf[4];
+    input_buffer_read(inbuf, buf, sizeof(buf));
+    *char_count = uint32_be_read(buf);
+
     uint8_t symbol_count;
     memcpy(&symbol_count, &inbuf->data[inbuf->position++], sizeof(uint8_t));
 
@@ -666,7 +685,10 @@ cleanup:
 }
 
 int compress(InputBuffer *inbuf, CodeTable *table, FILE *stream) {
-    if (fputc((uint8_t)inbuf->length, stream) == EOF) {
+    uint8_t char_count[4];
+    uint32_be_write(char_count, inbuf->length);
+    size_t written = fwrite(char_count, 1, sizeof(char_count), stream);
+    if (written != sizeof(char_count)) {
         return -1;
     }
     if (fputc(table->length, stream) == EOF) {
@@ -716,9 +738,9 @@ int compress(InputBuffer *inbuf, CodeTable *table, FILE *stream) {
 }
 
 
-int decompress(InputBuffer *inbuf, Node *root, size_t char_count, FILE *stream) {
+int decompress(InputBuffer *inbuf, Node *root, uint32_t char_count, FILE *stream) {
     Node *current = root;
-    size_t processed_count = 0;
+    uint32_t processed_count = 0;
     for (size_t i = inbuf->position; i < inbuf->length; ++i) {
         uint8_t byte = inbuf->data[i];
         for (int i = UINT8_WIDTH - 1; i >= 0 && processed_count < char_count; --i) {
@@ -816,6 +838,9 @@ int main(int argc, const char *argv[]) {
 
     if (arg_cursor >= argc) {
         input_file = stdin;
+    } else if (argv[arg_cursor][0] == '-') {
+        arg_cursor++;
+        input_file = stdin;
     } else {
         const char *pathname = argv[arg_cursor++];
         input_file = fopen(pathname, "r");
@@ -880,7 +905,7 @@ int main(int argc, const char *argv[]) {
         break;
     }
     case MODE_DECOMPRESS: {
-        size_t char_count;
+        uint32_t char_count;
         table = code_table_from_compressed(debug, inbuf, &char_count);
         if (!table) {
             fprintf(stderr, "error: code_table_from_compressed failed\n");
