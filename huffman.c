@@ -800,7 +800,7 @@ int main(int argc, const char *argv[]) {
         } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--decompress") == 0) {
             mode = MODE_DECOMPRESS;
             arg_cursor += 1;
-        } else if (strcmp(arg, "--debug-") == 0) {
+        } else if (strncmp(arg, "--debug-", 8) == 0) {
             const char *debug_level = arg + 8;
             if (strcmp(debug_level, "freq") == 0) {
                 debug |= DEBUG_FREQ;
